@@ -1,0 +1,18 @@
+# 数据集名称
+name: cat_dataset
+
+# 类别数量
+nc: 1  # 只有一类：猫
+
+# 类别名称
+# Classes
+names: ['cat']
+
+
+
+
+# 数据集路径
+path: ./data/cat_dataset  # 数据集的根目录路径
+train: images/train        # 相对于 path 的训练集路径python val.py --weights runs/train/exp7/weights/best.pt --data ./data/cat_dataset.yaml --img 640 --batch-size 8 --conf-thres 0.001 --verbose
+
+val: images/val            # 相对于 path 的验证集路径
