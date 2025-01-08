@@ -150,25 +150,25 @@ def run(
     """
     source = str(source)
     save_img = not nosave and not source.endswith(".txt")  # save inference images
-    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
-    is_url = source.lower().startswith(("rtsp://", "rtmp://", "http://", "https://"))
-    webcam = source.isnumeric() or source.endswith(".streams") or (is_url and not is_file)
+    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)#判断是不是文件
+    is_url = source.lower().startswith(("rtsp://", "rtmp://", "http://", "https://"))#判断是不是地址
+    webcam = source.isnumeric() or source.endswith(".streams") or (is_url and not is_file)#判断是不是摄像头
     screenshot = source.lower().startswith("screen")
     if is_url and is_file:
         source = check_file(source)  # download
 
     # Directories
-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
+    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run 增量文件夹，比如 runs/detect/exp3 (下一个就是exp4)
     (save_dir / "labels" if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
 
     # Load model
     device = select_device(device)
-    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)
-    stride, names, pt = model.stride, model.names, model.pt
+    model = DetectMultiBackend(weights, device=device, dnn=dnn, data=data, fp16=half)#支持各种推理后端，PyTorch、ONNX、TensorRT、CoreML 等DetectMultiBackend 会根据文件后缀名（如 .pt、.onnx）自动选择对应的推理后端。
+    stride, names, pt = model.stride, model.names, model.pt#加载模型的步长，类别、是否为pytorch类型的
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
     # Dataloader
-    bs = 1  # batch_size
+    bs = 1  # batch_size  bs=1表示每次输入一张图片
     if webcam:
         view_img = check_imshow(warn=True)
         dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
@@ -180,16 +180,16 @@ def run(
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
-    model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
-    seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))
-    for path, im, im0s, vid_cap, s in dataset:
-        with dt[0]:
-            im = torch.from_numpy(im).to(model.device)
+    model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup  预热模型，可以让模型稳定的东西
+    seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))#seen已推理图像数量 初始化一个空列表windows（用来存储显示窗口的信息） 3个profile对象（分别负责 数据加载时间、模型推理时间、后处理时间）
+    for path, im, im0s, vid_cap, s in dataset:#path：当前图像或视频帧的路径。im：经过预处理的图像，通常是一个 NumPy 数组（uint8 类型）im0s：原始图像没进行预处理的
+        with dt[0]:#测量数据加载时间
+            im = torch.from_numpy(im).to(model.device)#将图像数据从 NumPy 数组转换为 PyTorch 张量并送入GPU/cpu
             im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
-            im /= 255  # 0 - 255 to 0.0 - 1.0
-            if len(im.shape) == 3:
-                im = im[None]  # expand for batch dim
-            if model.xml and im.shape[0] > 1:
+            im /= 255  # 0 - 255 to 0.0 - 1.0        把张量归一化
+            if len(im.shape) == 3:#图像是(c, H, W)
+                im = im[None]  # expand for batch dim     None 表示增加一个新维度，且数值为1，  图像成了(B, C, H, W)
+            if model.xml and im.shape[0] > 1:#OpenVINO的话，需要把多个batch切分为多个1
                 ims = torch.chunk(im, im.shape[0], 0)
 
         # Inference
@@ -401,7 +401,7 @@ def parse_opt():
     parser.add_argument("--vid-stride", type=int, default=1, help="video frame-rate stride")
     opt = parser.parse_args()
     opt.imgsz *= 2 if len(opt.imgsz) == 1 else 1  # expand
-    print_args(vars(opt))
+    print_args(vars(opt))#把参数都打印了
     return opt
 
 
@@ -433,5 +433,5 @@ def main(opt):
 
 
 if __name__ == "__main__":
-    opt = parse_opt()
+    opt = parse_opt()#解析命令行传入的参数
     main(opt)
