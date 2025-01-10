@@ -183,7 +183,7 @@ def run(
     model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup  预热模型，可以让模型稳定的东西
     seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))#seen已推理图像数量 初始化一个空列表windows（用来存储显示窗口的信息） 3个profile对象（分别负责 数据加载时间、模型推理时间、后处理时间）
     for path, im, im0s, vid_cap, s in dataset:#path：当前图像或视频帧的路径。im：经过预处理的图像，通常是一个 NumPy 数组（uint8 类型）im0s：原始图像没进行预处理的
-        with dt[0]:#测量数据加载时间
+        with dt[0]:#测量数据加载时间，dt[0]是上下文管理器，进入with块时开始计时，退出with块时停止计时
             im = torch.from_numpy(im).to(model.device)#将图像数据从 NumPy 数组转换为 PyTorch 张量并送入GPU/cpu
             im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
             im /= 255  # 0 - 255 to 0.0 - 1.0        把张量归一化
@@ -194,7 +194,7 @@ def run(
 
         # Inference
         with dt[1]:
-            visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
+            visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False#主要目的还是生成一个不重复的路径
             if model.xml and im.shape[0] > 1:
                 pred = None
                 for image in ims:
@@ -204,7 +204,7 @@ def run(
                         pred = torch.cat((pred, model(image, augment=augment, visualize=visualize).unsqueeze(0)), dim=0)
                 pred = [pred, None]
             else:
-                pred = model(im, augment=augment, visualize=visualize)
+                pred = model(im, augment=augment, visualize=visualize)#pred 的输出通常是一个张量 pred: [B, N, 6]
         # NMS
         with dt[2]:
             pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)

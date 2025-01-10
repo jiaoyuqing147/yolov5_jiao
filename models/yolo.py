@@ -233,10 +233,10 @@ class DetectionModel(BaseModel):
         # Define model
         ch = self.yaml["ch"] = self.yaml.get("ch", ch)  # input channels
         if nc and nc != self.yaml["nc"]:
-            LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
+            LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")#如果传入的类别数量和yaml中类别数量不一样，那么就会覆盖，并且通知用户
             self.yaml["nc"] = nc  # override yaml value
         if anchors:
-            LOGGER.info(f"Overriding model.yaml anchors with anchors={anchors}")
+            LOGGER.info(f"Overriding model.yaml anchors with anchors={anchors}")#是否传入新的anchors，不用默认的
             self.yaml["anchors"] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
         self.names = [str(i) for i in range(self.yaml["nc"])]  # default names
@@ -386,12 +386,12 @@ def parse_model(d, ch):
         d.get("channel_multiple"),
     )
     if act:
-        Conv.default_act = eval(act)  # redefine default activation, i.e. Conv.default_act = nn.SiLU()
+        Conv.default_act = eval(act)  # redefine default activation, i.e. Conv.default_act = nn.SiLU()如果yaml配置文件中没有定义激活函数，那么就用默认的
         LOGGER.info(f"{colorstr('activation:')} {act}")  # print
     if not ch_mul:
-        ch_mul = 8
-    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+        ch_mul = 8#目标通道倍数应该是8的倍数，后面会用到
+    na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors  每一层特征图的网格点的锚框的数量，一般是3个 除了列表外，锚框还可能是整数（表示每层特征图的每个网格点有几个锚框，实际宽高由代码生成）
+    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)       在COCO数据集中，每个锚框有85个数值（4 个边界框参数（x, y, w, h），1 个目标置信度（obj），80 个类别概率），no是每层特征图的每个网格点的锚框的数量（3个）*85个通道数量
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
