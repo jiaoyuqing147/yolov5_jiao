@@ -239,11 +239,11 @@ class DetectionModel(BaseModel):
             LOGGER.info(f"Overriding model.yaml anchors with anchors={anchors}")#是否传入新的anchors，不用默认的
             self.yaml["anchors"] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
-        self.names = [str(i) for i in range(self.yaml["nc"])]  # default names
-        self.inplace = self.yaml.get("inplace", True)
+        self.names = [str(i) for i in range(self.yaml["nc"])]  # default names     类别["0", "1", "2"。。。。。]
+        self.inplace = self.yaml.get("inplace", True)#inplace = True 模型在一些操作中会尝试尽量避免创建新张量，而是直接对原始张量进行修改，暂时不是特别理解，先不看了
 
         # Build strides, anchors
-        m = self.model[-1]  # Detect()
+        m = self.model[-1]  # Detect()  model最后一层那肯定是检测头了
         if isinstance(m, (Detect, Segment)):
 
             def _forward(x):
@@ -251,10 +251,10 @@ class DetectionModel(BaseModel):
                 return self.forward(x)[0] if isinstance(m, Segment) else self.forward(x)
 
             s = 256  # 2x min stride
-            m.inplace = self.inplace
-            m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])  # forward
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
+            m.inplace = self.inplace#为了节省开销而搞的设定
+            m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])  # forward   #构造一个全0张量作为输入，形状是(1, ch, 256, 256)  ch是通道数，虽然256*256不是640*640，但是这主要是为了计算特征图的stride模拟用的，经过前向传播可以得到三个特征图，用256*256除以三个特征图就可以得到缩放的比例了（也就是所谓的步长）
+            check_anchor_order(m)#这函数主要功能就是看步长是从大到小还是从小到大，anchor也会跟着从大到小或者从小到大
+            m.anchors /= m.stride.view(-1, 1, 1)#三个数字都是维度，-1表示自动计算第一维，后面的1，1表示第二维和第三维都是1.  最终的m.anchors会除以相应的步长，从而完成归一化，anchors除以步长是因为anchor其实是跑在特征图上的东西，不是原图
             self.stride = m.stride
             self._initialize_biases()  # only run once
 
@@ -393,14 +393,14 @@ def parse_model(d, ch):
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors  每一层特征图的网格点的锚框的数量，一般是3个 除了列表外，锚框还可能是整数（表示每层特征图的每个网格点有几个锚框，实际宽高由代码生成）
     no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)       在COCO数据集中，每个锚框有85个数值（4 个边界框参数（x, y, w, h），1 个目标置信度（obj），80 个类别概率），no是每层特征图的每个网格点的锚框的数量（3个）*85个通道数量
 
-    layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
-        m = eval(m) if isinstance(m, str) else m  # eval strings
+    layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out#
+    for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args#i是索引，enumerate会生成索引和元素，f就是from，后面会和ch配合使用的，f表示的是来自哪一层索引，可以是整型也可以是列表
+        m = eval(m) if isinstance(m, str) else m  # eval strings  eval函数把字符串解析成对应的类
         for j, a in enumerate(args):
-            with contextlib.suppress(NameError):
+            with contextlib.suppress(NameError):#如果eval解析字符串失败时，依然保留字符串，比如“nearest”
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
 
-        n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain  尽管深度的倍数是小于1的，但是最终的至少得是1.如果一开始设定就不是1的话，那也保留下来，可能有特殊意义，暂时我不懂
         if m in {
             Conv,
             GhostConv,
@@ -421,42 +421,42 @@ def parse_model(d, ch):
             DWConvTranspose2d,
             C3x,
         }:
-            c1, c2 = ch[f], args[0]
-            if c2 != no:  # if not output
-                c2 = make_divisible(c2 * gw, ch_mul)
+            c1, c2 = ch[f], args[0] #获取输入通道数 c1 和输出通道数 c2（来自参数 args[0]），在这一大段代码的最后，每个输出通道c2都会进入到ch列表中
+            if c2 != no:  # if not output  如果类别设定的和检测头通道数一样，那有可能很有别的作用，就不调整了 这是一种防御性编程方法，尽管检测头模块其实根本不会执行这段代码
+                c2 = make_divisible(c2 * gw, ch_mul)  #确保调整后的通道数c2 * gw是  ch_mul的倍数。
 
-            args = [c1, c2, *args[1:]]
-            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
-                args.insert(2, n)  # number of repeats
-                n = 1
+            args = [c1, c2, *args[1:]]# 初始化参数列表，保留输入输出通道数（c1, c2）并添加 args[1:] 的其他元素。
+            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:# 判断模块 m 是否属于需要重复次数的特定模块集合。
+                args.insert(2, n)  # number of repeats# 将重复次数 n 插入到 args 列表的第 2 个位置（索引为 2）。
+                n = 1 # 重置 n 为 1，防止后续对 n 的误用。
         elif m is nn.BatchNorm2d:
-            args = [ch[f]]
-        elif m is Concat:
-            c2 = sum(ch[x] for x in f)
+            args = [ch[f]] # 设置 args 为输入通道 ch[f]，因为 BatchNorm2d 只需要输入通道。
+        elif m is Concat:# 如果模块 m 是 Concat（用于特征拼接）。
+            c2 = sum(ch[x] for x in f) # 计算输出通道数 c2，为拼接的所有通道之和。
         # TODO: channel, gw, gd
-        elif m in {Detect, Segment}:
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
-            if m is Segment:
-                args[3] = make_divisible(args[3] * gw, ch_mul)
-        elif m is Contract:
-            c2 = ch[f] * args[0] ** 2
-        elif m is Expand:
-            c2 = ch[f] // args[0] ** 2
-        else:
-            c2 = ch[f]
+        elif m in {Detect, Segment}: # 如果模块 m 是检测模块（Detect）或分割模块（Segment）。
+            args.append([ch[x] for x in f])# 将输入通道列表（对应 f 索引的通道）附加到 args。是detect模块的时候，ch = [3, 64, 128, ..., 256, 512, 1024]，  f值是[17, 20, 23]，根据f中的标号找对应的通道值就行了ch[17],ch[20],ch[23]，也就是[256, 512, 1024]，最终这个args就是args = [80, anchors, [256, 512, 1024]]
+            if isinstance(args[1], int):  # number of anchors# 如果 args[1] 是整数（表示 anchor 的数量）
+                args[1] = [list(range(args[1] * 2))] * len(f)# 创建 anchor 框索引并复制到每个输入通道。假如args = [80, 3,'''] ,最后生成的args[1] = [[0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]]
+            if m is Segment:# 如果是分割模块（Segment）。
+                args[3] = make_divisible(args[3] * gw, ch_mul)# 调整输出通道数（根据宽度乘子 gw 和通道乘子 ch_mul）。
+        elif m is Contract:# 如果模块 m 是 Contract（下采样操作）。
+            c2 = ch[f] * args[0] ** 2# 输出通道数 c2 等于输入通道数乘以缩放因子（args[0] 的平方）。
+        elif m is Expand:# 如果模块 m 是 Expand（上采样操作）。
+            c2 = ch[f] // args[0] ** 2 # 输出通道数 c2 等于输入通道数除以缩放因子（args[0] 的平方）。
+        else: # 如果模块 m 不属于上述任何一种。
+            c2 = ch[f]# 输出通道数 c2 等于输入通道数。
 
-        m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
-        t = str(m)[8:-2].replace("__main__.", "")  # module type
-        np = sum(x.numel() for x in m_.parameters())  # number params
-        m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
+        m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module  m(*args)表示对模块m调用构造函数，传入参数解包的args。动态生成n个m模块放到容器Sequential中
+        t = str(m)[8:-2].replace("__main__.", "")  # module type #这段代码的最终目的是提取模块 m 的 类名或模块路径，便于显示或记录。
+        np = sum(x.numel() for x in m_.parameters())  # number params#计算模块 m_ 的所有参数的总数量
+        m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params将一些信息（如层的索引、输入来源、类型、参数数量等）附加到模块 m_ 上，并通过 LOGGER.info 打印这些信息
         LOGGER.info(f"{i:>3}{str(f):>18}{n_:>3}{np:10.0f}  {t:<40}{str(args):<30}")  # print
-        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
-        layers.append(m_)
+        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist#x 是从输入 f 中取出的每个元素，用于逐一处理和计算#记录需要保存的特征图的索引
+        layers.append(m_)#layers 是所有模块的顺序列表，最终会用 nn.Sequential(*layers) 将这些模块按顺序组合成一个完整的网络。
         if i == 0:
             ch = []
-        ch.append(c2)
+        ch.append(c2)#ch是不断更新的，输入索引 f = [0]，从 ch[0] 获取通道数 3（RGB图），输出通道数 64，更新 ch = [3, 64]，输入索引 f = [1]，从 ch[1] 获取通道数 64，输出通道数 128，更新 ch = [3, 64, 128]以此类推（当然这玩意是配合变量f（from）使用的，如）
     return nn.Sequential(*layers), sorted(save)
 
 

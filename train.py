@@ -99,7 +99,7 @@ RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
 GIT_INFO = check_git_info()
 
-
+#hyp超参数的配置文件路径yaml或者超参数字典（于控制训练过程的行为，包括优化器、学习率、损失函数权重、数据增强等），
 def train(hyp, opt, device, callbacks):
     """
     Train a YOLOv5 model on a custom dataset using specified hyperparameters, options, and device, managing datasets,
@@ -149,19 +149,19 @@ def train(hyp, opt, device, callbacks):
         opt.workers,
         opt.freeze,
     )
-    callbacks.run("on_pretrain_routine_start")
+    callbacks.run("on_pretrain_routine_start")#触发所有注册到 on_pretrain_routine_start 事件的回调函数。在训练正式开始前触发。
 
     # Directories
-    w = save_dir / "weights"  # weights dir
-    (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
-    last, best = w / "last.pt", w / "best.pt"
+    w = save_dir / "weights"  # weights dir  #pathlib 模块中，/ 被重载为 路径拼接操作符 ，这句话是创建了weights子目录
+    (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir #evolve 是关于超参数进化的，开启后，只使用父目录，否则创建完整目录
+    last, best = w / "last.pt", w / "best.pt"  #pathlib.Path类型的
 
     # Hyperparameters
     if isinstance(hyp, str):
         with open(hyp, errors="ignore") as f:
-            hyp = yaml.safe_load(f)  # load hyps dict
+            hyp = yaml.safe_load(f)  # load hyps dict       加载进来成字典类型，如果是字典的话，就不用加载了，直接使用
     LOGGER.info(colorstr("hyperparameters: ") + ", ".join(f"{k}={v}" for k, v in hyp.items()))
-    opt.hyp = hyp.copy()  # for saving hyps to checkpoints
+    opt.hyp = hyp.copy()  # for saving hyps to checkpoints  超参数副本保存
 
     # Save run settings
     if not evolve:
