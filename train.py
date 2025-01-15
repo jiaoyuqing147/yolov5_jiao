@@ -165,8 +165,8 @@ def train(hyp, opt, device, callbacks):
 
     # Save run settings
     if not evolve:
-        yaml_save(save_dir / "hyp.yaml", hyp)
-        yaml_save(save_dir / "opt.yaml", vars(opt))
+        yaml_save(save_dir / "hyp.yaml", hyp)#训练的时候保存超参数
+        yaml_save(save_dir / "opt.yaml", vars(opt))#保存其他的参数
 
     # Loggers
     data_dict = None
@@ -196,10 +196,10 @@ def train(hyp, opt, device, callbacks):
             weights, epochs, hyp, batch_size = opt.weights, opt.epochs, opt.hyp, opt.batch_size
 
     # Config
-    plots = not evolve and not opt.noplots  # create plots
-    cuda = device.type != "cpu"
-    init_seeds(opt.seed + 1 + RANK, deterministic=True)
-    with torch_distributed_zero_first(LOCAL_RANK):
+    plots = not evolve and not opt.noplots  # create plots  #训练过程中生成相关图表
+    cuda = device.type != "cpu" #判断用是否用的是cpu
+    init_seeds(opt.seed + 1 + RANK, deterministic=True)#与随机相关的一些设置需要用随机种子固定
+    with torch_distributed_zero_first(LOCAL_RANK):#在分布式环境中控制数据检查的执行顺序，确保只有主进程检查或加载数据。暂时不研究
         data_dict = data_dict or check_dataset(data)  # check if None
     train_path, val_path = data_dict["train"], data_dict["val"]
     nc = 1 if single_cls else int(data_dict["nc"])  # number of classes
@@ -213,7 +213,7 @@ def train(hyp, opt, device, callbacks):
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
-        model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
+        model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create，虽然pt有中模型，但是我们自己的模型类别可能和加载的模型不一样，所以新建一个模型
         exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
         csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
@@ -223,7 +223,7 @@ def train(hyp, opt, device, callbacks):
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     amp = check_amp(model)  # check AMP
 
-    # Freeze
+    # Freeze #可以选择冻结一些层，让这些层的权重不变
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
     for k, v in model.named_parameters():
         v.requires_grad = True  # train all layers
@@ -236,7 +236,7 @@ def train(hyp, opt, device, callbacks):
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
     imgsz = check_img_size(opt.imgsz, gs, floor=gs * 2)  # verify imgsz is gs-multiple
 
-    # Batch size
+    # Batch size #一般用不到的，batch_zise你要是不穿，构造函数中的默认参数就是16
     if RANK == -1 and batch_size == -1:  # single-GPU only, estimate best batch size
         batch_size = check_train_batch_size(model, imgsz, amp)
         loggers.on_params_update({"batch_size": batch_size})
@@ -632,7 +632,7 @@ def main(opt, callbacks=Callbacks()):
         For detailed usage, refer to:
         https://github.com/ultralytics/yolov5/tree/master/models
     """
-    if RANK in {-1, 0}:
+    if RANK in {-1, 0}:#分布式或本地
         print_args(vars(opt))
         check_git_status()
         check_requirements(ROOT / "requirements.txt")
@@ -666,11 +666,11 @@ def main(opt, callbacks=Callbacks()):
             opt.exist_ok, opt.resume = opt.resume, False  # pass resume to exist_ok and disable resume
         if opt.name == "cfg":
             opt.name = Path(opt.cfg).stem  # use model.yaml as name
-        opt.save_dir = str(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))
+        opt.save_dir = str(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))#增量保存
 
     # DDP mode
     device = select_device(opt.device, batch_size=opt.batch_size)
-    if LOCAL_RANK != -1:
+    if LOCAL_RANK != -1:#如果是分布式训练
         msg = "is not compatible with YOLOv5 Multi-GPU DDP training"
         assert not opt.image_weights, f"--image-weights {msg}"
         assert not opt.evolve, f"--evolve {msg}"
@@ -684,10 +684,10 @@ def main(opt, callbacks=Callbacks()):
         )
 
     # Train
-    if not opt.evolve:
+    if not opt.evolve:#大多数人不会用到evolve，如果用户指定 --evolve，训练脚本会进入超参数优化流程，使用遗传算法调整配置，尝试找到最佳的超参数组合
         train(opt.hyp, opt, device, callbacks)
 
-    # Evolve hyperparameters (optional)
+    # Evolve hyperparameters (optional)  #这种超参数非常耗费计算资源，因为会通过遗传算法等不停的调整超参数，训练完调整，然后再训练，然后再调整。。。
     else:
         # Hyperparameter evolution metadata (including this hyperparameter True-False, lower_limit, upper_limit)
         meta = {
