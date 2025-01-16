@@ -430,6 +430,8 @@ def train(hyp, opt, device, callbacks):
                 if ema:
                     ema.update(model)
                 last_opt_step = ni
+                # Clear cache after each optimization step
+                torch.cuda.empty_cache()  # This clears the GPU memory  #原来没这句话的，我电脑实在是不行，显存总是不够
 
             # Log
             if RANK in {-1, 0}:
@@ -467,6 +469,8 @@ def train(hyp, opt, device, callbacks):
                     callbacks=callbacks,
                     compute_loss=compute_loss,
                 )
+                # Clear GPU memory after validation
+                torch.cuda.empty_cache()#原来没这个的，尝试少占用点显存试试
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
