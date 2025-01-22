@@ -215,9 +215,9 @@ def train(hyp, opt, device, callbacks):
         ckpt = torch.load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
         model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create，虽然pt有中模型，但是我们自己的模型类别可能和加载的模型不一样，所以新建一个模型
         exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
-        csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
-        csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
-        model.load_state_dict(csd, strict=False)  # load
+        csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32 #提取模型的权重
+        csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect #计算csd和model.state_dict()之间的交集
+        model.load_state_dict(csd, strict=False)  # load  #strict=False表示加载时不要求完全匹配。如果某些参数找不到对应的权重，程序不会报错，这样允许灵活加载部分权重。
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
@@ -226,13 +226,13 @@ def train(hyp, opt, device, callbacks):
     # Freeze #可以选择冻结一些层，让这些层的权重不变
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
     for k, v in model.named_parameters():
-        v.requires_grad = True  # train all layers
+        v.requires_grad = True  # train all layers#默认设置所有层的参数为可训练状态（requires_grad=True），表示这些参数会参与梯度计算和更新。
         # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
         if any(x in k for x in freeze):
             LOGGER.info(f"freezing {k}")
             v.requires_grad = False
 
-    # Image size
+    # Image size  #计算并验证输入图像的大小（imgsz），确保它是网络的网格大小（grid size）的整数倍。
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
     imgsz = check_img_size(opt.imgsz, gs, floor=gs * 2)  # verify imgsz is gs-multiple
 
