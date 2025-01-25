@@ -247,6 +247,167 @@ class C3(nn.Module):
         return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+#因效率和开销问题，下面这个版本的C3WithGLCM弃用了。
+# class C3WithGLCM(nn.Module):
+#
+#     '''
+#      1、局部 GLCM 的计算
+#     我们在 compute_glcm 中，对输入x 的每个 batch、每个像素 (i,j) 做一次局部统计（默认为3*3范围）
+#     对于该局部 patch 的每个通道，生成一个 (L×L) 的 GLCM 矩阵（示例中只用一个方向「垂直邻居」）
+#     提取了四种特征：contrast、energy、entropy、homogeneity。
+#     最后在通道维度上做了平均（以便最终只得到 glcm_channels=4 个通道，而不是C×4）。
+#     2、形状维度
+#     最终的局部 GLCM 特征为 (B,4,H,W)。在后续 forward 里与原输入特征 (B,C,H,W) 在通道维拼接，变成 (B,C+4,H,W)
+#     3、计算量/效率
+#     该示例写法使用了四重循环 (for b in range(B), for i in range(H), for j in range(W), 以及 for c_ in range(C))，对大规模图像或大批量数据时开销相当大。
+#     可考虑使用 torch.nn.Unfold 或者 F.unfold 先将所有局部 patch「一次性」取出，再在 GPU 上做并行 GLCM 累计，这样可以极大提升性能。
+#     4、是否多方向
+#     如果你希望对 0°, 45°, 90°, 135° 等多方向做共生统计，可以对同一个局部 patch 的不同方向分别构建 GLCM，再取平均或者把多方向特征拼接起来。
+#     5、结果与任务融合
+#     得到的 (B,4,H,W) GLCM 特征图可以与其他网络分支进行更复杂的融合，比如做注意力机制、或者在更深层再拼接。
+#     如果你的任务需要更大感受野，也可以将 patch_size 调大（例如 5、7、9...），但要注意计算量随着 patch_size 的增大而升高。
+#     '''
+#     def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5, glcm_channels=4):
+#         super().__init__()
+#         c_ = int(c2 * e)  # Hidden channels
+#         self.glcm_channels = glcm_channels
+#
+#         # 原始 C3 模块的卷积层
+#         self.cv1 = Conv(c1 + glcm_channels, c_, 1, 1)  # 加入 GLCM 通道
+#         self.cv2 = Conv(c1 + glcm_channels, c_, 1, 1)
+#         self.cv3 = Conv(2 * c_, c2, 1)  # 最终通道压缩
+#         self.m = nn.Sequential(
+#             *(Bottleneck(c_, c_, shortcut, g) for _ in range(n))
+#         )  # Bottleneck 序列
+#
+#         # 一些 GLCM 相关超参数，可根据需求修改
+#         self.L = 16          # 灰度级数
+#         self.patch_size = 3  # GLCM 计算时的局部窗口大小( odd number )
+#         # 当 patch_size=3 时，相当于以像素为中心，向上下左右各1个像素的邻域
+#
+#     def compute_glcm(self, x):
+#         """
+#         计算局部 GLCM 特征 (contrast, energy, entropy, homogeneity)
+#         并在通道维上做平均，得到输出 (B, self.glcm_channels, H, W)
+#
+#         注意：
+#         1. 这里是最直接的多重循环示例，计算开销大，建议实际使用时考虑并行化/向量化。
+#         2. 假设 x 大约在 [0,1] 范围，否则需要先归一化或 clamp。
+#         3. 仅示例单方向 (垂直: 相邻像素(i+1,j))，可按需加入多方向统计并取平均/拼接。
+#         """
+#         B, C, H, W = x.shape
+#
+#         # 为了保证在边缘也能取到 3x3 patch，这里做一圈 padding
+#         pad = self.patch_size // 2  # =1 when patch_size=3
+#         # 可以选 'replicate' 或 'reflect' 等
+#         x_pad = F.pad(x, (pad, pad, pad, pad), mode='replicate')  # (B, C, H+2pad, W+2pad)
+#
+#         # 准备输出张量: 我们最终希望得到 (B, H, W, 4)，再 permute 到 (B, 4, H, W)
+#         # 之所以最后一维是4，是因为我们打算提取 4 个局部特征
+#         glcm_features = x.new_zeros((B, H, W, self.glcm_channels))
+#
+#         # 为了加速一些小操作，提前创建一个 [0, 1, ..., L-1] 的向量
+#         idxs = torch.arange(self.L, device=x.device)
+#
+#         # 遍历每个 batch, 每个像素位置
+#         for b in range(B):
+#             for i in range(H):
+#                 for j in range(W):
+#                     # ----- (1) 从补了边界的 x_pad 中取出对应该像素的 3x3 邻域（或 patch_size x patch_size）-----
+#                     # 通道维 C 依旧保留，用于后面对每个通道做 GLCM，再做平均
+#                     local_patch = x_pad[b, :, i:i+self.patch_size, j:j+self.patch_size]
+#                     # local_patch shape: (C, patch_size, patch_size)
+#
+#                     # ----- (2) 对每个通道单独计算 GLCM, 并累加/平均 -----
+#                     # 我们这里把 C 个通道的 GLCM特征做**平均**，也可以保留并拼接
+#                     contrast_acc = 0.0
+#                     energy_acc   = 0.0
+#                     entropy_acc  = 0.0
+#                     homogene_acc = 0.0
+#
+#                     for c_ in range(C):
+#                         patch_c = local_patch[c_]  # shape: (patch_size, patch_size)
+#
+#                         # 2.1 量化到 [0, L-1]
+#                         patch_c_quant = (patch_c * (self.L - 1)).long().clamp_(0, self.L - 1)
+#
+#                         # 2.2 生成一个 (L, L) 的 GLCM 统计矩阵 (仅示例单方向: 垂直邻居)
+#                         glcm = torch.zeros((self.L, self.L), device=x.device)
+#                         for rr in range(self.patch_size - 1):
+#                             for cc in range(self.patch_size):
+#                                 v1 = patch_c_quant[rr, cc]
+#                                 v2 = patch_c_quant[rr+1, cc]
+#                                 glcm[v1, v2] += 1.0
+#
+#                         # 2.3 归一化
+#                         glcm_sum = glcm.sum().clamp_min(1e-6)
+#                         glcm /= glcm_sum
+#
+#                         # 2.4 计算局部特征: contrast, energy, entropy, homogeneity
+#                         # contrast
+#                         row_idxs = idxs.view(-1, 1)
+#                         col_idxs = idxs.view(1, -1)
+#                         contrast_matrix = (row_idxs - col_idxs) ** 2
+#                         contrast_val = torch.sum(contrast_matrix * glcm)
+#
+#                         # energy
+#                         energy_val = torch.sum(glcm * glcm)
+#
+#                         # entropy
+#                         entropy_val = -torch.sum(glcm * torch.log(glcm + 1e-6))
+#
+#                         # homogeneity
+#                         homogeneity_val = torch.sum(glcm / (1.0 + (row_idxs - col_idxs).abs()))
+#
+#                         # 累加
+#                         contrast_acc  += contrast_val
+#                         energy_acc    += energy_val
+#                         entropy_acc   += entropy_val
+#                         homogene_acc  += homogeneity_val
+#
+#                     # ----- (3) 对 C 个通道求平均 -----
+#                     contrast_acc  /= C
+#                     energy_acc    /= C
+#                     entropy_acc   /= C
+#                     homogene_acc  /= C
+#
+#                     # ----- (4) 存入结果 -----
+#                     glcm_features[b, i, j, 0] = contrast_acc
+#                     glcm_features[b, i, j, 1] = energy_acc
+#                     glcm_features[b, i, j, 2] = entropy_acc
+#                     glcm_features[b, i, j, 3] = homogene_acc
+#
+#         # glcm_features 现在是 (B, H, W, 4)
+#         # 我们要返回 (B, 4, H, W)，才能和原通道进行拼接
+#         glcm_features = glcm_features.permute(0, 3, 1, 2).contiguous()
+#
+#         return glcm_features
+#
+#     def forward(self, x):
+#         # 计算局部GLCM特征
+#         glcm_feats = self.compute_glcm(x)
+#         # glcm_feats shape = (B, 4, H, W)，假设 self.glcm_channels=4
+#
+#         # 在通道维拼接到原特征图
+#         # x shape = (B, C, H, W), glcm_feats shape = (B, 4, H, W)
+#         x = torch.cat((x, glcm_feats), dim=1)  # (B, C+4, H, W)
+#
+#         # 进入原始 C3 模块流程
+#         return self.cv3(
+#             torch.cat(
+#                 (
+#                     self.m(self.cv1(x)),  # -> (B, c_, H, W)
+#                     self.cv2(x)           # -> (B, c_, H, W)
+#                 ),
+#                 dim=1
+#             )
+#         )
+
+
 class C3x(C3):
     """Extends the C3 module with cross-convolutions for enhanced feature extraction in neural networks."""
 
