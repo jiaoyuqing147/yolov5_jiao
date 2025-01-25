@@ -1,14 +1,57 @@
+import argparse
+import contextlib
+import math
+import os
+import platform
+import sys
+from copy import deepcopy
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[1]  # YOLOv5 root directory
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))  # add ROOT to PATH
+if platform.system() != "Windows":
+    ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
+
+from models.common import (
+    C3,
+    C3SPP,
+    C3TR,
+    SPP,
+    SPPF,
+    Bottleneck,
+    BottleneckCSP,
+    C3Ghost,
+    C3x,
+    Classify,
+    Concat,
+    Contract,
+    Conv,
+    CrossConv,
+    DetectMultiBackend,
+    DWConv,
+    DWConvTranspose2d,
+    Expand,
+    Focus,
+    GhostBottleneck,
+    GhostConv,
+    Proto,
+
+)
+
+
 # ------------------ 工具函数: 计算多方向局部GLCM，并提取4种纹理特征 ------------------ #
 def compute_local_glcm_features(
-    x,
-    patch_size=3,
-    L=16,
-    directions=[(0,1), (1,0), (1,1), (1,-1)],
-    reduce_mode='average'  # 'average' 或 'sum' 或 'concat'
+        x,
+        patch_size=3,
+        L=16,
+        directions=[(0, 1), (1, 0), (1, 1), (1, -1)],
+        reduce_mode='average'  # 'average' 或 'sum' 或 'concat'
 ):
     """
     x: (B, C, H, W), float in [0,1] (假设)
@@ -36,7 +79,7 @@ def compute_local_glcm_features(
     #    out形状: (B, C*patch_size^2, out_H*out_W), 其中 out_H = H, out_W = W (stride=1)
     unfolded = F.unfold(x_padded, kernel_size=patch_size, stride=1)  # (B, C*ks*ks, H*W)
     # 我们 reshape 为 (B*C, patch_size^2, H*W)
-    unfolded = unfolded.reshape(B*C, patch_size*patch_size, H*W)  # => (BC, p^2, HW)
+    unfolded = unfolded.reshape(B * C, patch_size * patch_size, H * W)  # => (BC, p^2, HW)
 
     # 3) 量化到 [0, L-1], 并 clamp
     unfolded = (unfolded * (L - 1)).long().clamp_(0, L - 1)  # (BC, p^2, HW)
@@ -44,7 +87,7 @@ def compute_local_glcm_features(
     # 准备一个容器，用来存放多方向 GLCM 累加或拼接
     # shape: (BC, HW, L, L) -- 每个 patch 独立一个 (L,L) 矩阵, 共 BC * HW 个
     # 但如果 direction>1, 我们要么做多条目累加, 要么在新维度上存
-    glcm_all_dirs = x.new_zeros((B*C, H*W, L, L))  # float tensor
+    glcm_all_dirs = x.new_zeros((B * C, H * W, L, L))  # float tensor
 
     # ---- 4) 多方向统计: 这里演示对 directions 做累加, 然后可做平均 (reduce_mode='average') ----
     for (dr, dc) in directions:
@@ -53,9 +96,9 @@ def compute_local_glcm_features(
         # dr,dc in [-patch_size+1, ..., patch_size-1]
 
         # 先得到 0..(p^2-1) 的网格坐标
-        coords = torch.arange(patch_size*patch_size, device=x.device)
+        coords = torch.arange(patch_size * patch_size, device=x.device)
         rr = coords // patch_size  # 行坐标
-        cc = coords % patch_size   # 列坐标
+        cc = coords % patch_size  # 列坐标
 
         # 目标像素 = (rr+dr, cc+dc)
         # 需要保证不越界(0 <= rr+dr < patch_size, 0 <= cc+dc < patch_size)
@@ -74,8 +117,8 @@ def compute_local_glcm_features(
         # 由于 v1,v2 都是 [0..L-1] 的整数，可用 scatter_add:
         #   scatter_add_(dim, index, src) => glcm[..., index] += src
         # 但是我们是2D binning => 需要在最后两个维度(L,L)都用 index. 下面演示一种方法:
-        bc_range = torch.arange(B*C, device=x.device)[:, None, None]  # (BC,1,1)
-        hw_range = torch.arange(H*W, device=x.device)[None, None, :]  # (1,1, HW)
+        bc_range = torch.arange(B * C, device=x.device)[:, None, None]  # (BC,1,1)
+        hw_range = torch.arange(H * W, device=x.device)[None, None, :]  # (1,1, HW)
 
         # 构造一个ones张量, shape跟 (v1) 一样, 代表要加1
         ones_src = torch.ones_like(v1, dtype=glcm_all_dirs.dtype)
@@ -95,12 +138,12 @@ def compute_local_glcm_features(
 
         flat_idx = (v1 * L + v2)  # (BC, #pairs, HW), in [0, L^2-1]
         # glcm_all_dirs shape = (BC, HW, L, L) => flatten => (BC, HW, L^2)
-        glcm_flat = glcm_all_dirs.view(B*C, H*W, L*L)  # flatten last 2 dims
+        glcm_flat = glcm_all_dirs.view(B * C, H * W, L * L)  # flatten last 2 dims
         # scatter_add in dim=2
         glcm_flat.scatter_add_(
             2,
             flat_idx,  # (BC, #pairs, HW)
-            ones_src,   # (BC, #pairs, HW)
+            ones_src,  # (BC, #pairs, HW)
         )
         # glcm_all_dirs 已更新
 
@@ -116,30 +159,30 @@ def compute_local_glcm_features(
 
     # glcm_all_dirs 形状: (BC, HW, L, L).
     # 现在要对每个patch (BC,HW) 做归一化 => sum over (L,L), compute 4 features => (BC, HW, 4)
-    glcm_sum = glcm_all_dirs.sum(dim=(2,3), keepdim=True).clamp_min(1e-6)
+    glcm_sum = glcm_all_dirs.sum(dim=(2, 3), keepdim=True).clamp_min(1e-6)
     glcm_norm = glcm_all_dirs / glcm_sum  # (BC, HW, L, L)
 
     # 计算4个纹理特征: contrast, energy, entropy, homogeneity
     # 索引向量 [0..L-1]
     idxs = torch.arange(L, device=x.device).float()
-    row_idxs = idxs.view(-1,1)  # (L,1)
-    col_idxs = idxs.view(1,-1)  # (1,L)
+    row_idxs = idxs.view(-1, 1)  # (L,1)
+    col_idxs = idxs.view(1, -1)  # (1,L)
     diff = row_idxs - col_idxs
     diff_sq = diff ** 2
     abs_diff = diff.abs()
 
     # (BC, HW, L, L) * broadcasting -> sum in (2,3)
-    contrast = (diff_sq * glcm_norm).sum(dim=(2,3))       # (BC, HW)
-    energy   = (glcm_norm * glcm_norm).sum(dim=(2,3))     # (BC, HW)
-    entropy  = -(glcm_norm * (glcm_norm+1e-6).log()).sum(dim=(2,3))  # (BC, HW)
-    homogene = (glcm_norm / (1.0 + abs_diff)).sum(dim=(2,3))  # (BC, HW)
+    contrast = (diff_sq * glcm_norm).sum(dim=(2, 3))  # (BC, HW)
+    energy = (glcm_norm * glcm_norm).sum(dim=(2, 3))  # (BC, HW)
+    entropy = -(glcm_norm * (glcm_norm + 1e-6).log()).sum(dim=(2, 3))  # (BC, HW)
+    homogene = (glcm_norm / (1.0 + abs_diff)).sum(dim=(2, 3))  # (BC, HW)
 
     # 拼成 (BC, HW, 4)
     feats_4 = torch.stack([contrast, energy, entropy, homogene], dim=-1)  # (BC, HW, 4)
 
     # reshape 回 (B, C, H*W, 4) => (B, C, 4, H, W) => or 直接合并C维?
-    feats_4 = feats_4.view(B, C, H*W, 4).permute(0, 1, 3, 2)  # (B, C, 4, HW)
-    feats_4 = feats_4.view(B, C*4, H, W)  # 这里演示保留C维: => (B, 4C, H, W)
+    feats_4 = feats_4.view(B, C, H * W, 4).permute(0, 1, 3, 2)  # (B, C, 4, HW)
+    feats_4 = feats_4.reshape(B, C * 4, H, W)  # 这里演示保留C维: => (B, 4C, H, W)
 
     # 如果你只想对通道做平均(不区分通道)，则再 reduce dim=1
     # feats_4 = feats_4.view(B, C, 4, H, W).mean(dim=1)  # => (B, 4, H, W)
@@ -150,18 +193,18 @@ def compute_local_glcm_features(
 # ------------------ 示例: 将上面函数融合到一个自定义 C3WithGLCM 模块 ------------------ #
 class C3WithGLCM(nn.Module):
     def __init__(
-        self,
-        c1,
-        c2,
-        n=1,
-        shortcut=True,
-        g=1,
-        e=0.5,
-        glcm_channels=4,   # 期望输出多少 GLCM特征通道
-        patch_size=3,
-        L=16,
-        directions=[(0,1), (1,0), (1,1), (1,-1)],
-        reduce_mode='average'
+            self,
+            c1,
+            c2,
+            n=1,
+            shortcut=True,
+            g=1,
+            e=0.5,
+            glcm_channels=4,  # 期望输出多少 GLCM特征通道
+            patch_size=3,
+            L=16,
+            directions=[(0, 1), (1, 0), (1, 1), (1, -1)],
+            reduce_mode='average'
     ):
         """
         glcm_channels: 如果最终只想要 4 个特征通道 (contrast, energy, entropy, homogeneity),
@@ -221,13 +264,15 @@ class C3WithGLCM(nn.Module):
 # ------------------ 简单测试 ------------------ #
 if __name__ == "__main__":
     # 假设输入 (B=2, C=8, H=16, W=16)
-    inp = torch.rand(2, 8, 16, 16).cuda()  # 放到GPU看加速效果
+    inp = torch.rand(1, 256, 80, 80).cuda()   # 放到GPU看加速效果
     model = C3WithGLCM(
-        c1=8, c2=16,
-        glcm_channels=4,
-        patch_size=3,
-        L=16,
-        directions=[(0,1), (1,0), (1,1), (1,-1)],
+        c1=256,  # 输入通道数
+        c2=128,  # 输出通道数
+        glcm_channels=4,  # GLCM 提取的纹理特征数
+        patch_size=3,  # 邻域大小
+        L=4,  # 量化灰度级
+      #  directions=[(0, 1), (1, 0), (1, 1), (1, -1)],  # 方向
+        directions=[(0, 1)],  # 方向
         reduce_mode='average'
     ).cuda()
     out = model(inp)
