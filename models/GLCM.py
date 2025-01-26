@@ -1,3 +1,6 @@
+
+#注意：此文件中的内容并未真正使用，仅仅是测试而已。
+
 import argparse
 import contextlib
 import math
@@ -202,7 +205,7 @@ class C3WithGLCM(nn.Module):
             e=0.5,
             glcm_channels=4,  # 期望输出多少 GLCM特征通道
             patch_size=3,
-            L=16,
+            L=16,#灰度级数是16的话，计算量大了些
             directions=[(0, 1), (1, 0), (1, 1), (1, -1)],
             reduce_mode='average'
     ):
@@ -267,10 +270,10 @@ if __name__ == "__main__":
     inp = torch.rand(1, 256, 80, 80).cuda()   # 放到GPU看加速效果
     model = C3WithGLCM(
         c1=256,  # 输入通道数
-        c2=128,  # 输出通道数
+        c2=256,  # 输出通道数
         glcm_channels=4,  # GLCM 提取的纹理特征数
         patch_size=3,  # 邻域大小
-        L=4,  # 量化灰度级
+        L=8,  # 量化灰度级
       #  directions=[(0, 1), (1, 0), (1, 1), (1, -1)],  # 方向
         directions=[(0, 1)],  # 方向
         reduce_mode='average'

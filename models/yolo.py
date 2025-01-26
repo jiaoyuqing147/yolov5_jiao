@@ -421,13 +421,14 @@ def parse_model(d, ch):
             nn.ConvTranspose2d,
             DWConvTranspose2d,
             C3x,
+            C3WithGLCM,
         }:
             c1, c2 = ch[f], args[0] #获取输入通道数 c1 和输出通道数 c2（来自参数 args[0]），在这一大段代码的最后，每个输出通道c2都会进入到ch列表中
             if c2 != no:  # if not output  如果类别设定的和检测头通道数一样，那有可能很有别的作用，就不调整了 这是一种防御性编程方法，尽管检测头模块其实根本不会执行这段代码
                 c2 = make_divisible(c2 * gw, ch_mul)  #确保调整后的通道数c2 * gw是  ch_mul的倍数。
 
             args = [c1, c2, *args[1:]]# 初始化参数列表，保留输入输出通道数（c1, c2）并添加 args[1:] 的其他元素。
-            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x}:# 判断模块 m 是否属于需要重复次数的特定模块集合。
+            if m in {BottleneckCSP, C3, C3TR, C3Ghost, C3x, C3WithGLCM}:# 判断模块 m 是否属于需要重复次数的特定模块集合。
                 args.insert(2, n)  # number of repeats# 将重复次数 n 插入到 args 列表的第 2 个位置（索引为 2）。
                 n = 1 # 重置 n 为 1，防止后续对 n 的误用。
         elif m is nn.BatchNorm2d:

@@ -246,12 +246,12 @@ class C3(nn.Module):
         """Performs forward propagation using concatenated outputs from two convolutions and a Bottleneck sequence."""
         return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
 
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 #因效率和开销问题，下面这个版本的C3WithGLCM弃用了。
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+
+
 # class C3WithGLCM(nn.Module):
 #
 #     '''
@@ -406,6 +406,168 @@ import torch.nn.functional as F
 #                 dim=1
 #             )
 #         )
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class C3WithGLCM(nn.Module):
+    def __init__(
+        self,
+        c1,
+        c2,
+        n=1,
+        shortcut=True,
+        g=1,
+        e=0.5,
+        glcm_channels=4,  # 期望输出多少 GLCM特征通道
+        patch_size=3,
+        L=8,
+        directions=[(0, 1), (1, 0), (1, 1), (1, -1)],
+        reduce_mode='average'
+    ):
+        """
+        glcm_channels: 如果最终只想要 4 个特征通道 (contrast, energy, entropy, homogeneity),
+                       且对通道C做平均 => glcm_channels=4
+                       如果保留通道并输出(4*C), 则glcm_channels应设为 4*C => 由自己掌控
+        """
+        super().__init__()
+        self.glcm_channels = glcm_channels
+        self.patch_size = patch_size
+        self.L = L
+        self.directions = directions
+        self.reduce_mode = reduce_mode
+
+        # 原始 C3 结构
+        c_ = int(c2 * e)  # Hidden channels
+        # 这里假设你会把 glcm_feats 直接拼回原特征 => (B, c1 + glcm_channels, H, W) 送给后续
+        self.cv1 = Conv(c1 + glcm_channels, c_, 1, 1)
+        self.cv2 = Conv(c1 + glcm_channels, c_, 1, 1)
+        self.cv3 = Conv(2 * c_, c2, 1)
+        self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g) for _ in range(n)))
+
+    def compute_glcm(self, x):
+        """
+        使用下面定义的 unfold + 多方向GLCM 函数
+        """
+        feats_4c = compute_local_glcm_features(
+            x,
+            patch_size=self.patch_size,
+            L=self.L,
+            directions=self.directions,
+            reduce_mode=self.reduce_mode
+        )
+
+        # 如果最后只想要 (B, 4, H, W), 对 C 做平均:
+        feats_4 = feats_4c.view(x.size(0), x.size(1), 4, x.size(2), x.size(3))
+        feats_4 = feats_4.mean(dim=1)  # => (B, 4, H, W)
+
+        return feats_4
+
+    def forward(self, x):
+        # 1) 计算 GLCM 特征
+        glcm_feats = self.compute_glcm(x)  # => (B, 4, H, W)
+
+        # 2) 拼接 => (B, C+4, H, W)
+        x_cat = torch.cat([x, glcm_feats], dim=1)
+
+        # 3) 原始 C3流程
+        out = torch.cat([self.m(self.cv1(x_cat)), self.cv2(x_cat)], dim=1)
+        out = self.cv3(out)
+        return out
+
+def compute_local_glcm_features(
+        x,
+        patch_size=3,
+        L=16,
+        directions=[(0, 1), (1, 0), (1, 1), (1, -1)],
+        reduce_mode='average'  # 'average' 或 'sum' 或 'concat'
+):
+    """
+    x: (B, C, H, W), float in [0,1] (假设)
+    patch_size: GLCM邻域大小(odd number), e.g. 3,5,...
+    L: 量化灰度级数
+    directions: 列表，表示想统计的像素偏移(direction)，如[(0,1), (1,0), (1,1), (1,-1)]
+    reduce_mode: 多方向融合方式
+        - 'average': 不同方向的 GLCM 相加平均后再提特征
+        - 'sum': 同上但不做平均
+        - 'concat': 在特征维度上拼接(可能得到更多channel)，这里为了简洁不做完整示例
+
+    return: glcm_feats => (B, 4, H, W)
+      - 这里提取 contrast, energy, entropy, homogeneity 4个特征
+      - 若 directions>1 且 reduce_mode='concat', 通道数会变为 4 * num_directions
+    """
+
+    B, C, H, W = x.shape
+    pad = patch_size // 2
+
+    # 1) 对输入做 padding, 保证边缘像素也能取到 patch_size x patch_size 邻域
+    x_padded = F.pad(x, (pad, pad, pad, pad), mode='replicate')  # (B, C, H+2pad, W+2pad)
+
+    # 2) 用 unfold 一次性提取所有patch: 卷积视角 => kernel_size=patch_size, stride=1
+    unfolded = F.unfold(x_padded, kernel_size=patch_size, stride=1)  # (B, C*ks*ks, H*W)
+    unfolded = unfolded.reshape(B * C, patch_size * patch_size, H * W)  # => (BC, p^2, HW)
+
+    # 3) 量化到 [0, L-1], 并 clamp
+    unfolded = (unfolded * (L - 1)).long().clamp_(0, L - 1)  # (BC, p^2, HW)
+
+    glcm_all_dirs = x.new_zeros((B * C, H * W, L, L))  # float tensor
+
+    for (dr, dc) in directions:
+        coords = torch.arange(patch_size * patch_size, device=x.device)
+        rr = coords // patch_size
+        cc = coords % patch_size
+
+        valid_mask = ((rr + dr) >= 0) & ((rr + dr) < patch_size) & \
+                     ((cc + dc) >= 0) & ((cc + dc) < patch_size)
+        valid_indices_1 = coords[valid_mask]
+        shifted_rr = rr[valid_mask] + dr
+        shifted_cc = cc[valid_mask] + dc
+        valid_indices_2 = shifted_rr * patch_size + shifted_cc
+
+        v1 = unfolded[:, valid_indices_1, :]
+        v2 = unfolded[:, valid_indices_2, :]
+
+        bc_range = torch.arange(B * C, device=x.device)[:, None, None]
+        hw_range = torch.arange(H * W, device=x.device)[None, None, :]
+
+        ones_src = torch.ones_like(v1, dtype=glcm_all_dirs.dtype)
+
+        flat_idx = (v1 * L + v2)
+        glcm_flat = glcm_all_dirs.view(B * C, H * W, L * L)
+        glcm_flat.scatter_add_(
+            2,
+            flat_idx,
+            ones_src,
+        )
+
+    if reduce_mode == 'average':
+        glcm_all_dirs /= len(directions)
+
+    glcm_sum = glcm_all_dirs.sum(dim=(2, 3), keepdim=True).clamp_min(1e-6)
+    glcm_norm = glcm_all_dirs / glcm_sum
+
+    idxs = torch.arange(L, device=x.device).float()
+    row_idxs = idxs.view(-1, 1)
+    col_idxs = idxs.view(1, -1)
+    diff = row_idxs - col_idxs
+    diff_sq = diff ** 2
+    abs_diff = diff.abs()
+
+    contrast = (diff_sq * glcm_norm).sum(dim=(2, 3))
+    energy = (glcm_norm * glcm_norm).sum(dim=(2, 3))
+    entropy = -(glcm_norm * (glcm_norm + 1e-6).log()).sum(dim=(2, 3))
+    homogene = (glcm_norm / (1.0 + abs_diff)).sum(dim=(2, 3))
+
+    feats_4 = torch.stack([contrast, energy, entropy, homogene], dim=-1)
+    feats_4 = feats_4.view(B, C, H * W, 4).permute(0, 1, 3, 2)
+    feats_4 = feats_4.reshape(B, C * 4, H, W)
+
+    return feats_4
+
+
+
+
 
 
 class C3x(C3):
