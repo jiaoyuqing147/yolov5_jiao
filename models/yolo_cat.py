@@ -3,7 +3,7 @@ import torch.nn as nn
 from models.yolo import DetectionModel  # 引入原始模型
 from skimage.feature import graycomatrix, graycoprops
 import numpy as np
-from models.GLCM import GLCMExtractor
+from models.GLCM_1 import GLCMExtractor
 
 class GLCMEnhancedDetectionModel(DetectionModel):
     def __init__(self, cfg="yolov5s.yaml", ch=3, nc=None, anchors=None):
