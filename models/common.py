@@ -508,7 +508,7 @@ def compute_local_glcm_features(
     feats_4 = feats_4.view(B, C, H*W, 4).permute(0, 1, 3, 2)
     feats_4 = feats_4.reshape(B, C*4, H, W)
 
-    return feats_4
+    return feats_4.to(x.dtype)
 
 
 
@@ -571,7 +571,7 @@ class C3WithGLCM(nn.Module):
 
     def forward(self, x):
         # 1) 计算 GLCM 特征
-        glcm_feats = self.compute_glcm(x)  # => (B,4,H,W)
+        glcm_feats = self.compute_glcm(x).to(x.dtype)  # => (B,4,H,W)
         # 2) 在通道维拼接
         x_cat = torch.cat([x, glcm_feats], dim=1)  # => (B, C+4, H, W)
 
