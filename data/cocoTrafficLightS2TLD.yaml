@@ -3,12 +3,16 @@
 # 数据集根目录
 #path: F://jack_dataset//coco  # 注意使用 `/` 作为路径分隔符
 #path: W://Jack_datasets//COCO//dataset//Jack_generate_cat//yolostyle
-path: D://Jiao//dataset//COCO//Small_traffic_light
+path: D://Jiao//dataset//S2TLD//S2TLD7201280//normal_1//COCO
 
 # 数据集文件夹或图片列表文件
 train: images//train2017      # 训练集相对于 `path` 的路径
 val: images//val2017          # 验证集相对于 `path` 的路径
 # 类别名称
 names:
-  0: traffic light
+  0: red
+  1: yellow
+  2: green
+  3: off
+
 #结果存在了exp21里
