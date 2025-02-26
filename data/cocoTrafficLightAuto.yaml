@@ -1,0 +1,16 @@
+# data/cocoTrafficLightS2TLD.yaml (示例)
+
+# 数据集根目录，可留空或自定义
+path: D:/Jiao/dataset/JIAOTONGDENG/COCO
+
+# 训练集与验证集所在的文件夹路径
+train: D:/Jiao/dataset/JIAOTONGDENG/COCO/images/train2017
+val:   D:/Jiao/dataset/JIAOTONGDENG/COCO/images/val2017
+
+
+# 类别名称（index: name），必须与自己的数据集类别一一对应
+names:
+  0: red
+  1: yellow
+  2: green
+  3: off

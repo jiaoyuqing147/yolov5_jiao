@@ -1,4 +1,4 @@
-# Ultralytics YOLOv5 🚀, AGPL-3.0 license
+# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 """AutoAnchor utils."""
 
 import random
@@ -9,6 +9,8 @@ import yaml
 from tqdm import tqdm
 
 from utils import TryExcept
+
+
 from utils.general import LOGGER, TQDM_BAR_FORMAT, colorstr
 
 PREFIX = colorstr("AutoAnchor: ")
@@ -173,3 +175,6 @@ def kmean_anchors(dataset="./data/coco128.yaml", n=9, img_size=640, thr=4.0, gen
                 print_results(k, verbose)
 
     return print_results(k).astype(np.float32)
+
+
+
